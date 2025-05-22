@@ -6,18 +6,23 @@ class MySqlDatabase:
       host="localhost",
       user="roott",
       password="root",
-      database="trabalho_faculdade"
+      database="biblioteca"
     )
 
-  def query(self, cmd: str):
-    cursor = self.connection.cursor()
-    cursor.execute(cmd)
+  def query(self, cmd: str, args: None):
+    try: 
+      # CRIANDO CONEXÃO COM O CURSOR
+      cursor = self.connection.cursor()
 
-    response = cursor.fetchall()
-    cursor.close()
-    self.connection.close()
+      # EXECUTANDO O COMANDO
+      cursor.execute(cmd, args or ())
+      response = cursor.fetchall()
 
-    return response
+      # RETORNANDO CASO DE CERTO
+      return response
+    except Error as error:
+      print(f"Erro ao executar o comando {cmd} -> {error}")
+      return False
   
   def execute(self, cmd: str, args: None):
     try: 

@@ -1,48 +1,115 @@
-import os 
+import os
+import time
+import websockets
+import asyncio
+import json
 
+from utils.menu import carregar_menu
 from colorama import init, Fore
 
-if __name__ == "__main__":
-  os.system("cls")
-  init(autoreset=True)
+init(autoreset=True)
+has_session = False
+user_id = None
 
-  print(f"""
-    {Fore.CYAN}[Gestão de Estoque com Prev. de P.A]{Fore.RESET}
-  """)
+def limpar_tela():
+    os.system("cls" if os.name == "nt" else "clear")
 
-  username = str(input(f"    {Fore.MAGENTA}Username:{Fore.RESET} "))
-  password = str(input(f"    {Fore.MAGENTA}Senha:{Fore.RESET} "))
-
-  if username != "admin" and password != "admin":
-    os.system("cls")
+def exibir_mensagem(titulo, mensagem, cor=Fore.RESET):
     print(f"""
-      {Fore.CYAN}[Gestão de Estoque com Prev. de P.A - 24/05/2025]{Fore.RESET}
-      
-      Username ou Senha inválidos.
-    """)
-  else: 
-    os.system("cls")
-
-    print(f"""
-      {Fore.CYAN}[Gestão de Estoque com Prev. de P.A]{Fore.RESET}
-          
-      {Fore.BLUE}[1]{Fore.RESET} {Fore.YELLOW}Cadastrar Formula{Fore.RESET}
-      {Fore.BLUE}[2]{Fore.RESET} {Fore.YELLOW}Cadastrar Produto{Fore.RESET}
-      {Fore.BLUE}[3]{Fore.RESET} {Fore.YELLOW}Gerar Previsão de P.A{Fore.RESET}
-      {Fore.BLUE}[4]{Fore.RESET} {Fore.YELLOW}Editar Produto{Fore.RESET}
-    """)
-
-    opcao = int(input(f"      {Fore.BLUE}[?]{Fore.RESET} {Fore.YELLOW}Selecione uma opção:{Fore.RESET} "))
-    os.system("cls")
+    {Fore.LIGHTBLACK_EX}[BookShell - {titulo}]{Fore.RESET}
     
-    print(f"      {Fore.CYAN}[Gestão de Estoque com Prev. de P.A]{Fore.RESET}")
-    if opcao == 1:
-      print("")
-    elif opcao == 2:
-      print("")
-    elif opcao == 3: 
-      print("")
-    elif opcao == 4: 
-      print("alska")
-    else: 
-      os.system("cls")
+    {cor}{mensagem}{Fore.RESET}
+    """)
+    
+async def carregar_login():
+    global has_session, user_id
+    os.system("cls")
+
+    print(f"""
+    {Fore.LIGHTBLACK_EX}[BookShell - Login]{Fore.RESET}
+ 
+    {Fore.LIGHTBLACK_EX}Olá leitor, seja bem-vindo(a) à BookShell. Para darmos continuidade, realize seu login escaneando o QR CODE que vai aparecer na tela.{Fore.RESET}
+    """)
+
+    try:
+        async with websockets.connect('wss://aff8-2804-41a0-3f06-5b00-80f6-c1cd-f58e-140e.ngrok-free.app') as websocket:
+            await websocket.send(json.dumps({'action': 'terminal:start', 'terminalId': 'default'}))
+
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    print(f"{Fore.LIGHTRED_EX}Erro ao decodificar mensagem JSON.{Fore.RESET}")
+                    continue
+
+                action = data.get('action')
+
+                if action == 'user:logged' and not has_session:
+                    infos = data.get('payload', {})
+
+                    has_session = True
+                    user_id = infos.get('userId')
+
+                    # Evitar conflito de aspas no print
+                    print(f"    {Fore.LIGHTBLACK_EX}{infos.get('username', 'Usuário')}, sessão iniciada com sucesso! Aguarde para ser redirecionado(a).{Fore.RESET}")
+
+                    time.sleep(1)
+                    break
+        await dashboard(infos.get('role', 'leitor'))
+
+    except Exception as e:
+        print(f"{Fore.LIGHTRED_EX}Falha ao conectar com WebSocket: {e}{Fore.RESET}")
+        
+async def dashboard(perms: str):
+    global has_session, user_id
+
+    limpar_tela()
+
+    menus = {
+        "admin": [
+            "Cadastrar Livro",
+            "Cadastrar Leitor",
+            "Listar Livros",
+            "Listar Leitores",
+            "Emprestar Livro",
+            "Devolver Livro"
+        ],
+        "leitor": [
+            "Emprestar Livro",
+            "Devolver Livro",
+            "Pesquisar Livro",
+            "Listar Livros"
+        ]
+    }
+
+    tipo_menu = "Administrativo" if perms == "admin" else "leitor"
+    print(f"{Fore.LIGHTBLACK_EX}[BookShell - Menu {tipo_menu}]{Fore.RESET}\n")
+
+    for idx, opcao in enumerate(menus[perms], 1):
+        print(f"{Fore.LIGHTBLACK_EX}[{idx}]{Fore.RESET} {Fore.LIGHTYELLOW_EX}{opcao}{Fore.RESET}")
+    print(f"{Fore.LIGHTBLACK_EX}[0]{Fore.RESET} {Fore.LIGHTYELLOW_EX}Sair{Fore.RESET}\n")
+
+    try:
+        escolha = int(input(f"{Fore.LIGHTBLACK_EX}[?]{Fore.RESET} {Fore.LIGHTYELLOW_EX}Deseja prosseguir com qual opção?{Fore.RESET} "))
+        if escolha == 0:
+            has_session = False
+            user_id = None
+            limpar_tela()
+            exibir_mensagem("Sessão", "Você saiu da sessão. Redirecionando ao login...", Fore.LIGHTBLACK_EX)
+            
+            time.sleep(2)
+            return await carregar_login()
+          
+        return await carregar_menu(perms, escolha, user_id)
+    except ValueError:
+        limpar_tela()
+        
+        exibir_mensagem("Alerta Menu", "Aceitamos apenas números no menu. Estamos te redirecionando em instantes...", Fore.LIGHTRED_EX)
+        time.sleep(2)
+        
+        return await dashboard(perms)
+
+if __name__ == "__main__":
+    limpar_tela()
+
+    asyncio.run(carregar_login())
