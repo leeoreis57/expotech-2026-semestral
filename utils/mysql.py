@@ -3,9 +3,9 @@ from mysql.connector import connect, Error
 class MySqlDatabase:
   def __init__(self):
     self.connection = connect(
-      host="localhost",
-      user="roott",
-      password="root",
+      host="20.206.250.192",
+      user="edu",
+      password="rootfoda",
       database="biblioteca"
     )
 
