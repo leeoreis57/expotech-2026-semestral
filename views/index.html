@@ -446,10 +446,6 @@
                         <input type="tel" id="phone" name="phone" placeholder="(00) 00000-0000" maxlength="15" required>
                     </div>
                     <div class="form-group">
-                        <label for="email">Email</label>
-                        <input type="email" id="email" name="email" placeholder="seu@email.com" required>
-                    </div>
-                    <div class="form-group">
                         <label for="newUsername">Usuário</label>
                         <input type="text" id="newUsername" name="newUsername" placeholder="Escolha um nome de usuário" required>
                     </div>
@@ -614,30 +610,61 @@
                         button.textContent = originalText;
                         button.disabled = false;
                         
-                        return alert(`✅ ${username}, seu acesso à biblioteca foi concedido. Verifique o terminal.`);
+                        alert(`✅ ${username}, seu acesso à biblioteca foi concedido. Verifique o terminal.`);
+                        return location.reload();
                     }
                 }
             });
         });
 
         // Simulação de registro
-        registerFormElement.addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const button = document.getElementById('registerButton');
-            const originalText = button.textContent;
-            button.textContent = 'Processando...';
-            button.disabled = true;
-            
-            // Simulando um processo de registro
-            setTimeout(() => {
-                alert('Registro realizado com sucesso! Você já pode fazer login.');
-                button.textContent = originalText;
-                button.disabled = false;
-                toggleAuthMode(); // Voltar para o modo de login
-            }, 1500);
-        });
+    registerFormElement.addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const button = document.getElementById('registerButton');
+    const originalText = button.textContent;
+    button.textContent = 'Processando...';
+    button.disabled = true;
+    
+    // Pega os valores do formulário
+    const nome = document.getElementsByName("fullName")[0].value;
+    const cpf = document.getElementsByName("cpf")[0].value;
+    const telefone = document.getElementsByName("phone")[0].value;
+    const username = document.getElementsByName("newUsername")[0].value;
+    const password = document.getElementsByName("password")[0].value;
+    
+    // Envia a ação de registro via WebSocket
+    socket.send(JSON.stringify({
+        action: "user:register",
+        payload: { nome, cpf, telefone, username, password }
+    }));
 
+    // Escuta a resposta do servidor (registro)
+    const onMessage = (msg) => {
+        const msgParsed = JSON.parse(msg.data);
+        
+        if (msgParsed.action === "user:register") {
+            if (msgParsed.response === "OK") {
+                alert('✅ Registro realizado com sucesso! Você já pode fazer login.');
+                location.reload();
+                toggleAuthMode(); // volta para o modo login
+            } else if (msgParsed.response === "USERNAME_TAKEN") {
+                alert('❌ Esse nome de usuário já está em uso. Escolha outro.');
+            } else if (msgParsed.response === "MISSING_FIELDS") {
+                alert('❌ Por favor, preencha todos os campos.');
+            } else {
+                alert(`❌ Erro no registro: ${msgParsed.detail || 'Tente novamente.'}`);
+            }
+
+            button.textContent = originalText;
+            button.disabled = false;
+
+            socket.removeEventListener("message", onMessage);
+        }
+    };
+
+    socket.addEventListener("message", onMessage);
+    });
         // Animação dos elementos flutuantes no background
         document.addEventListener('DOMContentLoaded', function() {
             const bgAnimation = document.querySelector('.bg-animation');

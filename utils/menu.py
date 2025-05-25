@@ -17,7 +17,7 @@ async def esperar_dashboard(perms, dashboard, user_id: int):
 
 
 async def carregar_menu(perms: str, id: int, user_id: int):
-    from main import dashboard, carregar_login
+    from main import dashboard, carregar_login # type: ignore
     db = MySqlDatabase()
 
     if id == 0:

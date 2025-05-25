@@ -1,11 +1,11 @@
-from mysql.connector import connect, Error
+from pymysql import connect, MySQLError
 
 class MySqlDatabase:
   def __init__(self):
     self.connection = connect(
-      host="20.206.250.192",
+      host="20.250.161.74",
       user="edu",
-      password="rootfoda",
+      password="root",
       database="biblioteca"
     )
 
@@ -20,7 +20,7 @@ class MySqlDatabase:
 
       # RETORNANDO CASO DE CERTO
       return response
-    except Error as error:
+    except MySQLError as error:
       print(f"Erro ao executar o comando {cmd} -> {error}")
       return False
   
@@ -35,6 +35,6 @@ class MySqlDatabase:
 
       # RETORNANDO CASO DE CERTO
       return True
-    except Error as error:
+    except MySQLError as error:
       print(f"Erro ao executar o comando {cmd} -> {error}")
       return False
