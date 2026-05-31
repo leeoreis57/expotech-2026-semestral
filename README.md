@@ -171,7 +171,9 @@ Projeto desenvolvido para a **ExpoTech 2026**.
 Integrantes:
 
 * Leonardo Almeida
-* (Adicionar demais integrantes)
+* Isaac Oliveira
+* Eduardo Rodrigues
+* Brian Miranda
 
 ---
 
