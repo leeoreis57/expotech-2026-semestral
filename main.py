@@ -1,181 +1,149 @@
+import asyncio
+import msvcrt
 import os
-import time
-import shutil
-import re 
+import socket
+import threading
 
-from colorama import Fore
+import bcrypt
+import uvicorn
+import qrcode
+from colorama import Fore, init
+
+import state
+from utils.menu import carregar_menu
 from utils.mysql import MySqlDatabase
 
+init(autoreset=True)
 
-def limpar_tela():
+db = MySqlDatabase()
+
+
+def get_local_ip() -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def iniciar_servidor():
+    uvicorn.run("backend.server:app", host="0.0.0.0", port=8000, log_level="error")
+
+
+def exibir_qrcode(url: str):
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    qr.print_ascii(invert=True)
+
+def verificar_senha(senha_plain: str, senha_bd: str) -> bool:
+    """Suporta senhas bcrypt (novas) e texto simples (legado)."""
+    if senha_bd.startswith("$2b$") or senha_bd.startswith("$2a$"):
+        return bcrypt.checkpw(senha_plain.encode("utf-8"), senha_bd.encode("utf-8"))
+    return senha_plain == senha_bd
+
+
+async def aguardar_login():
+    """Clears screen, shows QR code, waits for mobile WS login or Enter for manual."""
+    state.login_event.clear()
+    state.register_event.clear()
+
     os.system("cls")
+    ip = get_local_ip()
+    url = f"http://{ip}:8000/join/start"
+    print(f"\n{Fore.YELLOW}=== BiblioTech ===")
+    print(f"{Fore.CYAN}Escaneie o QR Code para acessar pelo celular:\n")
+    exibir_qrcode(url)
+    print(f"{Fore.LIGHTBLACK_EX}Pressione Enter para fazer login manualmente.\n")
+
+    while True:
+        if msvcrt.kbhit():
+            key = msvcrt.getwch()
+            if key in ('\r', '\n'):
+                print()
+                return await login_manual()
+
+        if state.register_event.is_set():
+            state.register_event.clear()
+            u = state.registered_user
+            print(f"\n{Fore.CYAN}[+] Novo usuário registrado: {u['nome']} (@{u['username']})")
+
+        if state.login_event.is_set():
+            state.login_event.clear()
+            perms = state.user_data["role"]
+            user_id = state.user_data["user_id"]
+            print(f"\n{Fore.GREEN}Login recebido pelo celular!")
+            await asyncio.sleep(1)
+            return perms, user_id
+
+        await asyncio.sleep(0.1)
 
 
-async def esperar_dashboard(perms, dashboard, user_id: int):
-    time.sleep(2)
-    return await dashboard(perms, user_id)
+async def login_manual():
+    print(f"{Fore.CYAN}=== LOGIN MANUAL ===")
+    username = input("Usuário: ")
+    senha = input("Senha: ")
+
+    result = db.query(
+        "SELECT id_usuario, tipo_usuario, senha_usuario FROM tbl_usuarios WHERE username_usuario = %s",
+        (username,)
+    )
+
+    if result and verificar_senha(senha, result[0][2]):
+        if not result[0][2].startswith("$2b$") and not result[0][2].startswith("$2a$"):
+            hashed = bcrypt.hashpw(senha.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            db.execute("UPDATE tbl_usuarios SET senha_usuario = %s WHERE id_usuario = %s", (hashed, result[0][0]))
+        print(f"{Fore.GREEN}Login realizado com sucesso!")
+        return result[0][1], result[0][0]
+    else:
+        print(f"{Fore.RED}Usuário ou senha inválidos.")
+        return await aguardar_login()
 
 
-async def carregar_menu(perms: str, id: int, user_id: int):
-    from main import dashboard, carregar_login
-    db = MySqlDatabase()
+async def dashboard(perms, user_id):
+    print(f"\n{Fore.YELLOW}=== DASHBOARD ===")
 
-    if id == 0:
-        return carregar_login()
-
-    # ------------------------- ADMINISTRADOR -------------------------
     if perms == "admin":
-        match id:
-            case 1:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Cadastro Livro]{Fore.RESET}\n")
-                nome = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Nome do Livro:{Fore.RESET} ")
-                autor = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Autor do Livro:{Fore.RESET} ")
-                ano = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Ano do Livro:{Fore.RESET} ")
-                genero = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Gênero do Livro:{Fore.RESET} ")
-                quantidade = int(input(f"                    {Fore.LIGHTYELLOW_EX}[?] Quantidade:{Fore.RESET} "))
+        print("1 - Ver livros")
+        print("2 - Cadastrar livro")
+        print("3 - Excluir livro")
+        print("4 - Ver empréstimos")
+        print("5 - Empréstimo manual")
+        print("6 - Devolução manual")
+        print("7 - Cadastrar usuário")
+        print("8 - Excluir usuário")
+        print("9 - Cadastrar administrador")
+        print("0 - Sair")
 
-                result = db.execute(
-                    "INSERT INTO tbl_livros (nome_livro, autor_livro, ano_livro, genero_livro, qnt_livro) VALUES (%s, %s, %s, %s, %s)",
-                    (nome, autor, ano, genero, quantidade)
-                )
-                print(f"                    {Fore.GREEN}[✓]{Fore.RESET} Livro cadastrado com sucesso!" if result else f"{Fore.RED}[X]{Fore.RESET} Erro ao cadastrar livro.")
-                return await esperar_dashboard(perms, dashboard, user_id)
-
-            case 2:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Cadastro Usuário]{Fore.RESET}\n")
-                nome = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Nome:{Fore.RESET} ")
-                cpf = input(f"                    {Fore.LIGHTYELLOW_EX}[?] CPF:{Fore.RESET} ")
-                telefone = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Telefone:{Fore.RESET} ")
-                username = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Nome de usuário:{Fore.RESET} ")
-                senha = input(f"                    {Fore.LIGHTYELLOW_EX}[?] Senha:{Fore.RESET} ")
-
-                result = db.execute(
-                    "INSERT INTO tbl_usuarios (nome_usuario, cpf_usuario, telefone_usuario, username_usuario, senha_usuario, tipo_usuario) VALUES (%s, %s, %s, %s, %s, 'leitor')",
-                    (nome, cpf, telefone, username, senha)
-                )
-                print(f"                    {Fore.GREEN}[✓]{Fore.RESET} Usuário cadastrado com sucesso!" if result else f"{Fore.RED}[X]{Fore.RESET} Erro ao cadastrar usuário.")
-                return await  esperar_dashboard(perms, dashboard, user_id)
-
-            case 3:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Livros Cadastrados]{Fore.RESET}\n")
-                livros = db.query("SELECT * FROM tbl_livros;", ())
-                for livro in livros:
-                    print(f"                    ID: {livro[0]} | Nome: {livro[1]} | Autor: {livro[2]} | Ano: {livro[3]} | Gênero: {livro[4]} | Estoque: {livro[5]}")
-                time.sleep(10)
-                return await esperar_dashboard(perms, dashboard, user_id)
-
-            case 4:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Empréstimos Ativos]{Fore.RESET}\n")
-                emprestimos = db.query("""
-                    SELECT u.nome_usuario, l.nome_livro, e.data_emprestimo 
-                    FROM tbl_emprestimos e
-                    JOIN tbl_usuarios u ON e.id_leitor = u.id_usuario
-                    JOIN tbl_livros l ON e.id_livro = l.id_livro
-                    WHERE e.data_devolucao IS NULL
-                """, ())
-                if emprestimos:
-                    for emp in emprestimos:
-                        print(f"                    Usuário: {emp[0]} | Livro: {emp[1]} | Empréstimo: {emp[2]}")
-                else:
-                    print(f"                    {Fore.YELLOW}[!]{Fore.RESET} Nenhum empréstimo ativo no momento.")
-                return await  esperar_dashboard(perms, dashboard, user_id)
-
-            case 5:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Empréstimo Manual]{Fore.RESET}\n")
-                id_usuario = int(input(f"                    {Fore.LIGHTYELLOW_EX}[?] ID do Usuário:{Fore.RESET} "))
-                id_livro = int(input(f"                    {Fore.LIGHTYELLOW_EX}[?] ID do Livro:{Fore.RESET} "))
-
-                livro = db.query("SELECT qnt_livro FROM tbl_livros WHERE id_livro = %s;", (id_livro,))
-                if not livro or livro[0][0] <= 0:
-                    print(f"                    {Fore.RED}[X]{Fore.RESET} Livro indisponível no momento.")
-                else:
-                    db.execute("INSERT INTO tbl_emprestimos (id_livro, id_leitor) VALUES (%s, %s)", (id_livro, id_usuario))
-                    db.execute("UPDATE tbl_livros SET qnt_livro = qnt_livro - 1 WHERE id_livro = %s", (id_livro,))
-                    print(f"                    {Fore.GREEN}[✓]{Fore.RESET} Empréstimo realizado com sucesso!")
-                return await  esperar_dashboard(perms, dashboard, user_id)
-
-            case 6:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Devolução de Livro]{Fore.RESET}\n")
-                id_usuario = int(input(f"                    {Fore.LIGHTYELLOW_EX}[?] ID do Usuário:{Fore.RESET} "))
-                emprestimo = db.query("SELECT id_emprestimo, id_livro FROM tbl_emprestimos WHERE id_leitor = %s AND data_devolucao IS NULL;", (id_usuario,))
-                if not emprestimo:
-                    print(f"                    {Fore.YELLOW}[!]{Fore.RESET} Nenhum livro emprestado para esse usuário.")
-                else:
-                    id_emprestimo, id_livro = emprestimo[0]
-                    db.execute("UPDATE tbl_emprestimos SET data_devolucao = NOW() WHERE id_emprestimo = %s", (id_emprestimo,))
-                    db.execute("UPDATE tbl_livros SET qnt_livro = qnt_livro + 1 WHERE id_livro = %s", (id_livro,))
-                    print(f"                    {Fore.GREEN}[✓]{Fore.RESET} Livro devolvido com sucesso.")
-                return await  esperar_dashboard(perms, dashboard, user_id)
-
-    # ------------------------- LEITOR -------------------------
     elif perms == "leitor":
-        match id:
-            case 1:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Empréstimo de Livro]{Fore.RESET}\n")
-                termo = input(f'                    {Fore.LIGHTYELLOW_EX}[?] Nome ou ID do livro:{Fore.RESET} ')
-                try:
-                    resultado = db.query("SELECT * FROM tbl_livros WHERE nome_livro = %s OR id_livro = %s;", (termo, int(termo)))
-                except ValueError:
-                    resultado = db.query("SELECT * FROM tbl_livros WHERE nome_livro = %s;", (termo,))
-                if resultado:
-                    livro = resultado[0]
-                    ja_tem = db.query("SELECT id_emprestimo FROM tbl_emprestimos WHERE id_leitor = %s AND data_devolucao IS NULL;", (user_id,))
-                    if ja_tem:
-                        print(f"                    {Fore.RED}[X]{Fore.RESET} Você já tem um livro emprestado.")
-                    else:
-                        confirmar = input(f"                    {Fore.YELLOW}[?]{Fore.RESET} Deseja emprestar '{livro[1]}' de {livro[2]}? <s/n>: ")
-                        if confirmar.lower() == 's':
-                            db.execute("INSERT INTO tbl_emprestimos (id_livro, id_leitor) VALUES (%s, %s)", (livro[0], user_id,))
-                            db.execute("UPDATE tbl_livros SET qnt_livro = qnt_livro - 1 WHERE id_livro = %s", (livro[0],))
-                            print(f"                    {Fore.GREEN}[✓]{Fore.RESET} Livro emprestado com sucesso!")
-                return await esperar_dashboard (perms, dashboard, user_id)
+        print("1 - Ver/Pesquisar livro")
+        print("2 - Emprestar livro")
+        print("3 - Devolver livro")
+        print("4 - Favoritar livro")
+        print("5 - Desfavoritar livro")
+        print("6 - Ver favoritos")
+        print("0 - Sair")
 
-            case 2:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Devolução de Livro]{Fore.RESET}\n")
-                emprestimo = db.query("SELECT id_emprestimo, id_livro FROM tbl_emprestimos WHERE id_leitor = %s AND data_devolucao IS NULL;", (user_id,))
-                if not emprestimo:
-                    print(f"                    {Fore.YELLOW}[!]{Fore.RESET} Nenhum livro emprestado.")
-                else:
-                    id_emprestimo, id_livro = emprestimo[0]
-                    db.execute("UPDATE tbl_emprestimos SET data_devolucao = NOW() WHERE id_emprestimo = %s", (id_emprestimo,))
-                    db.execute("UPDATE tbl_livros SET qnt_livro = qnt_livro + 1 WHERE id_livro = %s", (id_livro,))
-                    print(f"                    {Fore.GREEN}[✓]{Fore.RESET} Livro devolvido com sucesso.")
-                return await  esperar_dashboard(perms, dashboard, user_id)
+    try:
+        opcao = int(input("\nEscolha: "))
+    except ValueError:
+        print(f"{Fore.RED}Opção inválida. Digite um número.")
+        await asyncio.sleep(1.5)
+        return await dashboard(perms, user_id)
+    await carregar_menu(perms, opcao, user_id)
 
-            case 3:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Pesquisa de Livro]{Fore.RESET}\n")
-                termo = input(f"                    {Fore.LIGHTYELLOW_EX}[?] NOME, ID ou GENÊRO do livro:{Fore.RESET} ")
-                if termo.isdigit():
-                    query = "SELECT * FROM tbl_livros WHERE id_livro = %s;"
-                    params = (int(termo),)
-                else:
-                    query = "SELECT * FROM tbl_livros WHERE nome_livro LIKE %s OR genero_livro LIKE %s;"
-                    
-                    termo_esperado = f"%{termo}%"
-                    params = (termo_esperado,termo_esperado)
-                resultados = db.query(query, params)
-                if resultados:
-                    for livro in resultados:
-                        print(f"\n                    {Fore.LIGHTYELLOW_EX}[!]{Fore.RESET} ID: {livro[0]} | Nome: {livro[1]} | Autor: {livro[2]} | Ano: {livro[3]} | Gênero: {livro[4]} | Quantidade: {livro[5]}")
-                else:
-                    print(f"                    {Fore.RED}[!]{Fore.RESET} Nenhum livro encontrado com o termo '{termo}'.")
-                time.sleep(5)
-                return await  esperar_dashboard(perms, dashboard, user_id)
 
-            case 4:
-                limpar_tela()
-                print(f"                    {Fore.LIGHTBLACK_EX}[BookShell - Livros Cadastrados]{Fore.RESET}\n")
-                livros = db.query("SELECT * FROM tbl_livros;", ())
-                for livro in livros:
-                    print(f"                    ID: {livro[0]} | Nome: {livro[1]} | Autor: {livro[2]} | Ano: {livro[3]} | Gênero: {livro[4]} | Estoque: {livro[5]}")
-                time.sleep(10)
-                return await  esperar_dashboard(perms, dashboard, user_id)
+async def iniciar():
+    await asyncio.sleep(1)  # wait for uvicorn to be ready
+    perms, user_id = await aguardar_login()
+    await dashboard(perms, user_id)
+
+
+if __name__ == "__main__":
+    server_thread = threading.Thread(target=iniciar_servidor, daemon=True)
+    server_thread.start()
+
+    asyncio.run(iniciar())

@@ -1,18 +1,23 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse
+import sys
 import uuid
 import json
 import os
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import bcrypt
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+import state
 from utils.mysql import MySqlDatabase
 
 app = FastAPI()
 
 db = MySqlDatabase()
 
-# Sessões na memória
 qr_sessions = {}
-terminal_session = {}
+
 
 @app.get("/join/{session_id}")
 async def handle_join(session_id: str):
@@ -21,109 +26,110 @@ async def handle_join(session_id: str):
         qr_sessions[session] = None
         return RedirectResponse(url=f"/join/{session}")
 
-    file_path = os.path.join("views", "index.html")
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    file_path = os.path.join(base_dir, "views", "index.html")
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
     return HTMLResponse(content=content)
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     session_id = str(uuid.uuid4())
     qr_sessions[session_id] = websocket
-    print(f"[WS] Sessão iniciada: {session_id}")
 
-    await websocket.send_json({ "action": "connection:opened", "sessionId": session_id })
+    await websocket.send_json({"action": "connection:opened", "sessionId": session_id})
 
     try:
         while True:
             message = await websocket.receive_text()
-            msgParsed = json.loads(message)
-            action = msgParsed.get("action")
+            msg = json.loads(message)
+            action = msg.get("action")
 
-            if action == "terminal:start":
-                terminal_id = msgParsed.get("terminalId")
-                terminal_session[terminal_id] = websocket
-                await websocket.send_json({ "action": "terminal:session", "response": "OK" })
-
-            elif action == "user:login":
-                payload = msgParsed.get("payload", {})
-                sql = """
-                    SELECT id_usuario, tipo_usuario, username_usuario, senha_usuario FROM tbl_usuarios
-                    WHERE username_usuario = %s AND senha_usuario = %s;
-                """
-                result = db.query(sql, (payload.get("username"), payload.get("password")))
-                print(result)
+            if action == "user:login":
+                payload = msg.get("payload", {})
+                result = db.query(
+                    "SELECT id_usuario, tipo_usuario, senha_usuario FROM tbl_usuarios WHERE username_usuario = %s",
+                    (payload.get("username"),)
+                )
+                senha_plain = payload.get("password", "")
+                senha_bd = result[0][2] if result else ""
+                senha_ok = False
                 if result:
-                    await websocket.send_json({ "action": "user:login", "response": "OK" })
-                    print(result)
-                    ws = terminal_session.get("default")
-                    if ws:
-                        await ws.send_json({
-                            "action": "user:logged",
-                            "payload": {
-                                "username": payload.get("username"),
-                                "role": result[0][1],
-                                "userId": result[0][0]
-                            }
-                        })
+                    if senha_bd.startswith("$2b$") or senha_bd.startswith("$2a$"):
+                        senha_ok = bcrypt.checkpw(senha_plain.encode("utf-8"), senha_bd.encode("utf-8"))
+                    else:
+                        senha_ok = senha_plain == senha_bd
+                        if senha_ok:
+                            hashed = bcrypt.hashpw(senha_plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                            db.execute("UPDATE tbl_usuarios SET senha_usuario = %s WHERE id_usuario = %s", (hashed, result[0][0]))
+                if senha_ok:
+                    await websocket.send_json({"action": "user:login", "response": "OK"})
+                    state.user_data["role"] = result[0][1]
+                    state.user_data["user_id"] = result[0][0]
+                    state.login_event.set()
                 else:
-                    await websocket.send_json({ "action": "user:login", "response": "CREDENTIALS_INVALID" })
-            elif action == "user:register": 
-                payload = msgParsed.get("payload", {})
+                    await websocket.send_json({"action": "user:login", "response": "CREDENTIALS_INVALID"})
 
-                # Campos obrigatórios
-                required_fields = ["nome", "cpf", "telefone", "username", "password"]
+            elif action == "user:register":
+                payload = msg.get("payload", {})
+                required_fields = ["nome", "telefone", "username", "password"]
 
-                print(payload)
-                # Verifica se todos os campos foram enviados
-                if all(field in payload for field in required_fields):
-                    try:
-                        sql = """
-                            INSERT INTO tbl_usuarios (nome_usuario, cpf_usuario, telefone_usuario, username_usuario, senha_usuario, tipo_usuario)
-                            VALUES (%s, %s, %s, %s, %s, %s);
-                        """
-                        db.execute(sql, (
-                            payload["nome"],
-                            payload["cpf"],
-                            payload["telefone"],
-                            payload["username"],
-                            payload["password"],
-                            "leitor"
-                        ))
-                        db.connection.commit()
+                if not all(payload.get(f) for f in required_fields):
+                    await websocket.send_json({"action": "user:register", "response": "MISSING_FIELDS"})
+                    continue
 
-                        await websocket.send_json({
-                            "action": "user:register",
-                            "response": "OK"
-                        })
+                try:
+                    hashed = bcrypt.hashpw(payload["password"].encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    db.execute(
+                        "INSERT INTO tbl_usuarios (nome_usuario, cpf_usuario, telefone_usuario, username_usuario, senha_usuario, tipo_usuario) VALUES (%s, %s, %s, %s, %s, 'leitor')",
+                        (payload["nome"], payload.get("cpf", ""), payload["telefone"], payload["username"], hashed)
+                    )
+                    user_result = db.query(
+                        "SELECT id_usuario FROM tbl_usuarios WHERE username_usuario = %s",
+                        (payload["username"],)
+                    )
+                    state.registered_user["id"] = user_result[0][0] if user_result else None
+                    state.registered_user["username"] = payload["username"]
+                    state.registered_user["nome"] = payload["nome"]
+                    state.register_event.set()
+                    await websocket.send_json({"action": "user:register", "response": "OK"})
+                except Exception as e:
+                    if "Duplicate entry" in str(e) and "username" in str(e):
+                        await websocket.send_json({"action": "user:register", "response": "USERNAME_TAKEN"})
+                    else:
+                        await websocket.send_json({"action": "user:register", "response": "ERROR", "detail": str(e)})
 
-                    except Exception as e:
-                        # Verifica se o erro é de usuário já existente
-                        if "Duplicate entry" in str(e) and "username" in str(e):
-                            await websocket.send_json({
-                                "action": "user:register",
-                                "response": "USERNAME_TAKEN"
-                            })
-                        else:
-                            await websocket.send_json({
-                                "action": "user:register",
-                                "response": "ERROR",
-                                "detail": str(e)
-                            })
-                else:
-                    await websocket.send_json({
-                        "action": "user:register",
-                        "response": "MISSING_FIELDS"
-                    })
+            elif action == "user:delete":
+                if state.user_data.get("role") != "admin":
+                    await websocket.send_json({"action": "user:delete", "response": "UNAUTHORIZED"})
+                    continue
+                payload = msg.get("payload", {})
+                user_id = payload.get("userId")
+                try:
+                    emprestimo_ativo = db.query(
+                        "SELECT id_emprestimo FROM tbl_emprestimos WHERE id_leitor = %s AND data_devolucao IS NULL",
+                        (user_id,)
+                    )
+                    if emprestimo_ativo:
+                        await websocket.send_json({"action": "user:delete", "response": "HAS_ACTIVE_LOAN"})
+                        continue
+                    db.execute("DELETE FROM tbl_favoritos WHERE id_usuario = %s", (user_id,))
+                    db.execute("DELETE FROM tbl_emprestimos WHERE id_leitor = %s", (user_id,))
+                    db.execute("DELETE FROM tbl_usuarios WHERE id_usuario = %s", (user_id,))
+                    await websocket.send_json({"action": "user:delete", "response": "OK"})
+                except Exception as e:
+                    await websocket.send_json({"action": "user:delete", "response": "ERROR"})
 
     except WebSocketDisconnect:
-        print(f"[WS] Sessão desconectada: {session_id}")
+        pass
     except Exception as e:
         print(f"[WS] Erro: {e}")
     finally:
         qr_sessions.pop(session_id, None)
 
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=3000, reload=True)
+    uvicorn.run("backend.server:app", host="0.0.0.0", port=80, reload=True)
