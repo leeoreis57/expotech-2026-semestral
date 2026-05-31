@@ -1,2 +1,6 @@
-__pycache__
-utils/__pycache__
+__pycache__/
+utils/__pycache__/
+venv/
+env/
+.venv/
+*.pyc
